@@ -20,8 +20,8 @@ import tmdbsimple as tmdb # Ensure tmdbsimple is imported
 # Attempt to get keys from environment variables first
 # Fallback to hardcoded values for local testing if environment variables are not set
 # Uncomment and replace with your actual keys if needed for quick testing:
-TMDB_API_KEY = "ef81d35aad29eb703703bae19252af00"
-SARVAM_KEY = "sk_8pixwq45_VNLeIFH7DSJBwy2WcZodk6aY"
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+SARVAM_KEY = os.getenv("SARVAM_API_KEY")
 
 # Set TMDb API key
 tmdb.API_KEY = TMDB_API_KEY
