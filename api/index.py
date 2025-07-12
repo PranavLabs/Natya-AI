@@ -35,7 +35,7 @@ app = FastAPI(
 origins = [
     "http://localhost", # For local testing if you run Framer locally
     "http://localhost:3000", # Common for local React dev servers
-    "https://prxnav.framer.website", # Replace with your actual Framer domain
+    "https://natyamv.onrender.com", # Replace with your actual Framer domain
     # Add any other domains your Framer site might be hosted on (e.g., custom domains)
 ]
 
