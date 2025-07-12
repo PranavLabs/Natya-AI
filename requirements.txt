@@ -5,4 +5,4 @@ requests
 pydantic
 gunicorn
 numpy
-sklearn
+scikit-learn
