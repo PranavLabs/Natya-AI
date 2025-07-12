@@ -1,263 +1,280 @@
 import os
 import requests
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
+import json
+import tmdbsimple as tmdb
+import re
 from fastapi import FastAPI, HTTPException
-import tmdbsimple as tmdb # Ensure tmdbsimple is imported
+from fastapi.middleware.cors import CORSMiddleware # Import CORSMiddleware
+from pydantic import BaseModel
 
 # --- API Key Configuration ---
-# IMPORTANT:
-# For production environments, it is highly recommended to set your API keys
-# as environment variables. For example, in your terminal before running:
-# export TMDB_API_KEY="your_tmdb_api_key_here"
-# export SARVAM_API_KEY="your_sarvam_api_key_here"
-
-# If you are testing locally and prefer not to set environment variables,
-# you can uncomment the lines below and replace "YOUR_TMDB_API_KEY" and
-# "YOUR_SARVAM_API_KEY" with your actual keys.
-# DO NOT commit hardcoded keys to version control in a real project!
-
-# Attempt to get keys from environment variables first
-# Fallback to hardcoded values for local testing if environment variables are not set
-# Uncomment and replace with your actual keys if needed for quick testing:
 TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 SARVAM_KEY = os.getenv("SARVAM_API_KEY")
 
-# Set TMDb API key
+if not TMDB_API_KEY:
+    raise ValueError("TMDB_API_KEY environment variable is not set.")
+if not SARVAM_KEY:
+    raise ValueError("SARVAM_API_KEY environment variable is not set.")
+
 tmdb.API_KEY = TMDB_API_KEY
 
-# Sarvam AI embedding service configuration
-SARVAM_URL = "https://api.sarvam.ai/v1/embeddings"
-HEADERS = {"API-Subscription-Key": SARVAM_KEY}
+SARVAM_CHAT_URL = "https://api.sarvam.ai/v1/chat/completions"
+HEADERS = {
+    "API-Subscription-Key": SARVAM_KEY,
+    "Content-Type": "application/json"
+}
 
-# Initialize FastAPI application
 app = FastAPI(
-    title="Movie Recommendation System",
-    description="API for recommending movies based on user preferences using TMDb and Sarvam AI embeddings.",
-    version="1.0.0"
+    title="Movie/TV Show Recommendation API",
+    description="Provides recommendations based on user preferences using TMDb and Sarvam AI."
 )
 
-# --- Helper Functions ---
+# --- CORS Configuration ---
+# IMPORTANT: Replace "YOUR_FRAMER_SITE_DOMAIN.framer.app" with your actual Framer site domain.
+# For development/testing, you can use ["*"] to allow all origins, but this is NOT recommended for production.
+origins = [
+    "http://localhost", # For local testing if you run Framer locally
+    "http://localhost:3000", # Common for local React dev servers
+    "https://prxnav.framer.website", # Replace with your actual Framer domain
+    # Add any other domains your Framer site might be hosted on (e.g., custom domains)
+]
 
-def get_genre_ids():
-    """
-    Fetches movie genre IDs and their names from TMDb.
-    Caches the result to avoid repeated API calls.
-    Raises HTTPException if TMDb API call fails.
-    """
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins, # List of allowed origins
+    allow_credentials=True, # Allow cookies to be included in cross-origin requests
+    allow_methods=["*"],    # Allow all HTTP methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"],    # Allow all headers in the request
+)
+
+# Pydantic model for request body validation
+class PreferenceRequest(BaseModel):
+    user_preference: str
+    media_type: str
+
+# --- TMDb Helper Functions (unchanged) ---
+
+def get_movie_genre_ids():
     try:
         g = tmdb.Genres()
-        # Fetch movie list and create a dictionary mapping lowercase genre names to their IDs
         genres = {x['name'].lower(): x['id'] for x in g.movie_list()['genres']}
-        print(f"Successfully fetched {len(genres)} genres from TMDb.")
+        print(f"Successfully fetched {len(genres)} movie genres from TMDb.")
         return genres
     except tmdb.exceptions.TMDbException as e:
-        print(f"Error fetching genres from TMDb: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Could not fetch movie genres. Please check your TMDb API key and network connection."
-        )
+        raise HTTPException(status_code=500, detail=f"Error fetching movie genres from TMDb: {e}")
     except requests.exceptions.RequestException as e:
-        print(f"Network error fetching genres from TMDb: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail="Network error while fetching movie genres. Please check your internet connection."
-        )
+        raise HTTPException(status_code=500, detail=f"Network error fetching movie genres from TMDb: {e}")
 
-# Global variable to store genre map, initialized once
-GENRE_MAP = get_genre_ids()
+def get_tv_genre_ids():
+    try:
+        g = tmdb.Genres()
+        genres = {x['name'].lower(): x['id'] for x in g.tv_list()['genres']}
+        print(f"Successfully fetched {len(genres)} TV genres from TMDb.")
+        return genres
+    except tmdb.exceptions.TMDbException as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching TV genres from TMDb: {e}")
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Network error fetching TV genres from TMDb: {e}")
 
-def parse_genres(user_text: str) -> list[int]:
-    """
-    Parses user input text to identify relevant TMDb genre IDs.
-    If no specific genres are found, it defaults to 'drama'.
-    """
-    # Convert user text to lowercase for case-insensitive matching
+MOVIE_GENRE_MAP = get_movie_genre_ids()
+TV_GENRE_MAP = get_tv_genre_ids()
+
+def parse_genres(user_text: str, media_type: str) -> list[int]:
     user_text_lower = user_text.lower()
-    # Find genre IDs where the genre name (key) is present in the user's text
-    hits = [GENRE_MAP[w] for w in GENRE_MAP if w in user_text_lower]
-    # Return found genres or default to 'drama' if no matches
-    return hits or [GENRE_MAP['drama']]
+    hits = []
+    genre_map_to_use = MOVIE_GENRE_MAP if media_type == 'movie' else TV_GENRE_MAP
 
-def discover_movies(genre_ids: list[int], pages: int = 2) -> list[dict]:
-    """
-    Discovers movies from TMDb based on a list of genre IDs.
-    Fetches movies from multiple pages (default 2) and caps the results to 100.
-    Includes error handling for TMDb API calls.
-    """
+    if 'anime' in user_text_lower or 'animation' in user_text_lower:
+        if 'animation' in genre_map_to_use:
+            hits.append(genre_map_to_use['animation'])
+        else:
+            print(f"Warning: 'Animation' genre not found in TMDb {media_type} genre map. Using default.")
+
+    for w in genre_map_to_use:
+        if w in user_text_lower and genre_map_to_use[w] not in hits:
+            hits.append(genre_map_to_use[w])
+    
+    if not hits:
+        if media_type == 'movie':
+            return [genre_map_to_use.get('drama', list(genre_map_to_use.values())[0])]
+        else:
+            return [genre_map_to_use.get('documentary', list(genre_map_to_use.values())[0])]
+    return hits
+
+def extract_year(user_text: str) -> int | None:
+    match = re.search(r'\b(19\d{2}|20\d{2})\b', user_text)
+    if match:
+        try:
+            year = int(match.group(0))
+            if 1900 <= year <= 2100:
+                return year
+        except ValueError:
+            pass
+    return None
+
+def extract_language(user_text: str) -> str | None:
+    user_text_lower = user_text.lower()
+    language_map = {
+        'hindi': 'hi', 'bollywood': 'hi', 'indian': 'hi',
+        'japanese': 'ja', 'korean': 'ko', 'mandarin': 'zh', 'chinese': 'zh',
+        'english': 'en', 'hollywood': 'en', 'american': 'en',
+        'spanish': 'es', 'french': 'fr', 'german': 'de', 'italian': 'it',
+        'arabic': 'ar', 'russian': 'ru', 'portuguese': 'pt'
+    }
+    for keyword, lang_code in language_map.items():
+        if keyword in user_text_lower:
+            return lang_code
+    return None
+
+def discover_movies(genre_ids: list[int], year: int | None = None, language: str | None = None, pages: int = 2) -> list[dict]:
     movies = []
     discover = tmdb.Discover()
+    discover_params = {
+        'with_genres': ','.join(map(str, genre_ids)),
+        'page': 1,
+        'sort_by': 'popularity.desc'
+    }
+    if year:
+        discover_params['primary_release_year'] = year
+    if language:
+        discover_params['with_original_language'] = language
+
     for p in range(1, pages + 1):
+        discover_params['page'] = p
         try:
-            # Make the API call to discover movies with specified genres
-            resp = discover.movie(with_genres=','.join(map(str, genre_ids)), page=p)
+            resp = discover.movie(**discover_params)
             movies.extend(resp['results'])
-            print(f"Fetched {len(resp['results'])} movies from TMDb page {p}.")
         except tmdb.exceptions.TMDbException as e:
-            print(f"Error discovering movies from TMDb (page {p}): {e}")
-            # Log the error but continue to try fetching from other pages
+            print(f"  Warning: Error discovering movies from TMDb (page {p}): {e}")
             continue
         except requests.exceptions.RequestException as e:
-            print(f"Network error discovering movies from TMDb (page {p}): {e}")
+            print(f"  Warning: Network error discovering movies from TMDb (page {p}): {e}")
             continue
-    # Cap the total number of movies to 100 to manage latency and processing load
     return movies[:100]
 
-def embed(text_list: list[str]) -> np.ndarray:
-    """
-    Generates embeddings for a list of texts using the Sarvam AI embedding service.
-    Handles network errors and unexpected API responses.
-    """
-    payload = {"input": text_list, "model": "sarvam-embed:v1"}
+def discover_tv_shows(genre_ids: list[int], year: int | None = None, language: str | None = None, pages: int = 2) -> list[dict]:
+    tv_shows = []
+    discover = tmdb.Discover()
+    discover_params = {
+        'with_genres': ','.join(map(str, genre_ids)),
+        'page': 1,
+        'sort_by': 'popularity.desc'
+    }
+    if year:
+        discover_params['first_air_date_year'] = year
+    if language:
+        discover_params['with_original_language'] = language
+
+    for p in range(1, pages + 1):
+        discover_params['page'] = p
+        try:
+            resp = discover.tv(**discover_params)
+            tv_shows.extend(resp['results'])
+        except tmdb.exceptions.TMDbException as e:
+            print(f"  Warning: Error discovering TV shows from TMDb (page {p}): {e}")
+            continue
+        except requests.exceptions.RequestException as e:
+            print(f"  Warning: Network error discovering TV shows from TMDb (page {p}): {e}")
+            continue
+    return tv_shows[:100]
+
+def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dict], media_type: str) -> str:
+    media_for_ai_prompt = media_list_from_tmdb[:20]
+
+    movie_list_str = ""
+    if not media_for_ai_prompt:
+        movie_list_str = f"No {media_type}s were found from TMDb to recommend from."
+    else:
+        for i, item in enumerate(media_for_ai_prompt):
+            title_or_name = item.get('title', item.get('name', 'N/A'))
+            overview = item.get('overview', 'No overview available')
+            popularity = item.get('popularity', 'N/A')
+            vote_average = item.get('vote_average', 'N/A')
+            movie_list_str += (
+                f"Title/Name: {title_or_name}\n"
+                f"Overview: {overview}\n"
+                f"Popularity: {popularity}\n"
+                f"Rating (Vote Average): {vote_average}\n"
+                f"---\n"
+            )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                f"You are a helpful and friendly {media_type} recommendation assistant. "
+                f"You will be given a user's {media_type} preference and a list of {media_type}s with their overviews, popularity, and ratings. "
+                f"The provided list is already sorted by popularity, with the most popular items at the top. "
+                f"Your task is to recommend 3-5 {media_type}s *from the provided list* that best match the user's preference, "
+                f"considering their popularity and rating as additional factors. "
+                f"For each recommendation, provide the {media_type} title/name and a brief, engaging description based on its overview. "
+                f"If no {media_type}s from the provided list are a good match, politely state that and suggest trying a different preference or genre."
+                f"Do not invent {media_type}s or details not present in the provided list."
+            )
+        },
+        {
+            "role": "user",
+            "content": (
+                f"My {media_type} preference is: {user_preference}\n\n"
+                f"Here is a list of {media_type}s to choose from (sorted by popularity):\n\n{movie_list_str}\n"
+                f"Please recommend 3-5 {media_type}s from this list that best fit my preference. "
+                f"Only recommend {media_type}s from the list provided. "
+                f"For each recommendation, state the title/name and a brief description."
+            )
+        }
+    ]
+
+    payload = {
+        "model": "sarvam-m",
+        "messages": messages,
+        "max_tokens": 500,
+        "temperature": 0.7
+    }
+
     try:
-        # Send POST request to Sarvam AI embedding service
-        r = requests.post(SARVAM_URL, json=payload, headers=HEADERS, timeout=15)
-        r.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
-
-        response_data = r.json()
-        # Extract embeddings from the response
-        vecs = [item['embedding'] for item in response_data.get('data', [])]
-        if not vecs:
-            raise ValueError("No embeddings found in Sarvam AI response.")
-        print(f"Successfully generated {len(vecs)} embeddings from Sarvam AI.")
-        return np.array(vecs, dtype=np.float32)
+        response = requests.post(SARVAM_CHAT_URL, json=payload, headers=HEADERS, timeout=30)
+        response.raise_for_status()
+        response_data = response.json()
+        if response_data and response_data.get('choices'):
+            ai_response = response_data['choices'][0]['message']['content']
+            return ai_response
+        else:
+            raise ValueError(f"Unexpected response structure from Sarvam AI: {response_data}")
     except requests.exceptions.RequestException as e:
-        print(f"Error calling Sarvam AI embedding service: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Could not generate text embeddings from Sarvam AI. Error: {e}"
-        )
-    except KeyError:
-        print(f"Unexpected response structure from Sarvam AI: {r.json()}")
-        raise HTTPException(
-            status_code=500,
-            detail="Unexpected response format from embedding service. 'data' or 'embedding' key missing."
-        )
+        error_detail = f"HTTP Status: {e.response.status_code}, Reason: {e.response.reason}, Response: {e.response.text}" if hasattr(e, 'response') and e.response is not None else str(e)
+        raise HTTPException(status_code=500, detail=f"Sarvam AI API Error: {error_detail}")
+    except KeyError as e:
+        raise HTTPException(status_code=500, detail=f"Sarvam AI response parsing error: Missing key {e}")
     except ValueError as e:
-        print(f"Data error from Sarvam AI: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Data error from embedding service: {e}"
-        )
-
-def rank_by_similarity(user_paragraph: str, movies: list[dict], top_k: int = 10) -> list[dict]:
-    """
-    Ranks movies by their semantic similarity to the user's preference paragraph.
-    Uses cosine similarity between the user's text embedding and movie overviews' embeddings.
-    Returns the top_k most similar movies.
-    """
-    if not movies:
-        return []
-
-    # Generate embedding for the user's preference paragraph
-    user_vec = embed([user_paragraph])
-
-    # Filter movies that have an overview and collect their overviews
-    movies_with_overview = [m for m in movies if m.get('overview')]
-    synopses = [m['overview'] for m in movies_with_overview]
-
-    if not synopses:
-        print("No movie overviews available for similarity ranking.")
-        return [] # No synopses to compare
-
-    # Generate embeddings for movie overviews
-    movie_vecs = embed(synopses)
-
-    # Calculate cosine similarity between user vector and movie overview vectors
-    # [0] is used because cosine_similarity returns a 2D array, and we need the first row
-    sims = cosine_similarity(user_vec, movie_vecs)[0]
-
-    # Pair movies (that had overviews) with their similarity scores
-    movies_and_sims = list(zip(movies_with_overview, sims))
-
-    # Sort movies by similarity score in descending order
-    ranked = sorted(movies_and_sims, key=lambda x: x[1], reverse=True)
-
-    # Prepare the final list of top_k recommended movies
-    recommended_movies = []
-    for m, s in ranked[:top_k]:
-        recommended_movies.append({
-            "title": m.get('title', 'N/A'),
-            "score": round(s, 3), # Round score for cleaner output
-            "overview": m.get('overview', 'No overview available')
-        })
-    print(f"Ranked {len(recommended_movies)} movies by similarity.")
-    return recommended_movies
+        raise HTTPException(status_code=500, detail=f"Sarvam AI data error: {e}")
 
 # --- FastAPI Endpoint ---
-
 @app.post("/recommend")
-def recommend_movies(pref: dict):
-    """
-    **Movie Recommendation Endpoint**
-
-    This endpoint takes a user's movie preference description and returns
-    a list of recommended movies.
-
-    **Request Body:**
-    - `text`: A string describing the user's movie preferences (e.g., "I want a thrilling action movie with a strong female lead").
-
-    **Example Request:**
-    ```json
-    {
-        "text": "A heartwarming comedy about friendship and overcoming challenges."
-    }
-    ```
-
-    **Response:**
-    A list of dictionaries, each containing:
-    - `title`: The movie title.
-    - `score`: A similarity score (higher is better).
-    - `overview`: A brief synopsis of the movie.
-
-    **Possible HTTP Errors:**
-    - `400 Bad Request`: If the 'text' field is missing or invalid in the request body.
-    - `404 Not Found`: If no movies are found for the inferred genres or if ranking fails.
-    - `500 Internal Server Error`: For issues with TMDb or Sarvam AI API calls, or unexpected errors.
-    """
-    # Validate input: ensure 'text' key exists and its value is a string
-    if 'text' not in pref or not isinstance(pref['text'], str) or not pref['text'].strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Missing or invalid 'text' field in request body. Please provide a string."
-        )
-
-    user_preference_text = pref['text'].strip()
-    print(f"Received user preference: '{user_preference_text}'")
-
+async def recommend_media(request: PreferenceRequest):
     try:
-        # 1. Parse genres from user preference
-        genres = parse_genres(user_preference_text)
-        print(f"Inferred genre IDs: {genres}")
+        user_preference = request.user_preference
+        media_type = request.media_type
 
-        # 2. Discover movies based on genres
-        movies = discover_movies(genres)
-        if not movies:
-            raise HTTPException(
-                status_code=404,
-                detail="No movies found for the specified genres. Try a different description."
-            )
-        print(f"Discovered {len(movies)} movies.")
+        if media_type not in ['movie', 'tv']:
+            raise HTTPException(status_code=400, detail="Invalid media_type. Must be 'movie' or 'tv'.")
 
-        # 3. Rank movies by similarity to user preference
-        ranked_movies = rank_by_similarity(user_preference_text, movies)
+        release_year = extract_year(user_preference)
+        original_language = extract_language(user_preference)
+        genres = parse_genres(user_preference, media_type)
 
-        if not ranked_movies:
-            raise HTTPException(
-                status_code=404,
-                detail="Could not rank movies based on your preference. Try a more detailed description."
-            )
+        if media_type == 'movie':
+            media_list_from_tmdb = discover_movies(genres, year=release_year, language=original_language)
+        else: # media_type == 'tv'
+            media_list_from_tmdb = discover_tv_shows(genres, year=release_year, language=original_language)
 
-        print(f"Returning {len(ranked_movies)} recommended movies.")
-        return ranked_movies
+        if not media_list_from_tmdb:
+            return {"recommendation": f"No {media_type}s found from TMDb for your criteria. Try a different description or broaden your search."}
+
+        recommendation_text = get_chat_recommendation(user_preference, media_list_from_tmdb, media_type)
+        return {"recommendation": recommendation_text}
 
     except HTTPException as e:
-        # Re-raise HTTPExceptions that were already created by helper functions
         raise e
     except Exception as e:
-        # Catch any other unexpected errors and return a generic 500 error
-        print(f"An unexpected error occurred: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"An internal server error occurred: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
