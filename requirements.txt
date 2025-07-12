@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+tmdbsimple
+requests
+pydantic
+gunicorn # Essential for running FastAPI on Heroku
