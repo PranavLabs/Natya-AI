@@ -96,9 +96,25 @@ export default function App() {
 
       const data = await response.json();
       
-      // The backend now returns the full updated history, including the AI's response.
-      // The AI's latest message might also contain 'recommendations' array.
-      setMessages(data.history);
+      // *** MODIFIED LOGIC HERE ***
+      // The backend now returns the full updated history, and a separate 'recommendations' array.
+      // We need to ensure the LAST message in the history state also contains these recommendations.
+      const updatedHistoryFromBackend = data.history;
+      const latestBotMessage = updatedHistoryFromBackend[updatedHistoryFromBackend.length - 1];
+      
+      // Create a new message object for the frontend that includes recommendations
+      const formattedLatestBotMessage = {
+        ...latestBotMessage, // Copy role and content
+        recommendations: data.recommendations // Add the structured recommendations
+      };
+
+      // Replace the last message in the history with our formatted one
+      const finalMessagesForFrontend = [
+        ...updatedHistoryFromBackend.slice(0, updatedHistoryFromBackend.length - 1),
+        formattedLatestBotMessage
+      ];
+
+      setMessages(finalMessagesForFrontend);
 
     } catch (error) {
       console.error('API call failed:', error);
@@ -114,7 +130,7 @@ export default function App() {
 
     return (
       <div style={recommendationsContainerStyle}>
-        <h3 style={recommendationsTitleStyle}>Recommendations:</h3>
+        {/* Removed the "Recommendations:" title here, as the AI's ai_message will contain introductory text */}
         <ul style={recommendationsListStyle}>
           {recs.map((rec, idx) => (
             <li key={idx} style={recommendationItemStyle}>
@@ -198,13 +214,10 @@ export default function App() {
                 <div
                   style={msg.role === 'user' ? userMessageBubbleStyle : botMessageBubbleStyle}
                 >
-                  {/* Render general AI message content */}
-                  {/* Now we only render the general message if there are no structured recommendations */}
-                  {(!msg.recommendations || msg.recommendations.length === 0) && (
-                    <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }}></div>
-                  )}
+                  {/* Always render the general AI message content (introductory text) */}
+                  <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br/>') }}></div>
                   
-                  {/* Render structured recommendations if available */}
+                  {/* Conditionally render structured recommendations if available */}
                   {msg.recommendations && msg.recommendations.length > 0 && renderRecommendations(msg.recommendations)}
                 </div>
               </div>
