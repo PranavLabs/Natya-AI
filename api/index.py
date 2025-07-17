@@ -75,27 +75,19 @@ app.mount("/static", StaticFiles(directory=FRONTEND_STATIC_ASSETS_DIR), name="st
 class Message(BaseModel):
     role: str
     content: str
-    # Removed recommendations from Message model as it was for Gemini feature
 
-class RecommendationItem(BaseModel):
-    title: str = Field(..., description="The title or name of the recommended movie/TV show.")
-    description: str = Field(..., description="A brief, engaging description based on its overview.")
-    type: str = Field(..., description="Whether it's a 'movie' or 'tv show'.")
-    # Add other relevant fields if you want them in the structured output
-    # e.g., tmdb_id: Optional[int], poster_path: Optional[str]
+# Removed RecommendationItem as AI will return plain text
+# class RecommendationItem(BaseModel):
+#     title: str = Field(..., description="The title or name of the recommended movie/TV show.")
+#     description: str = Field(..., description="A brief, engaging description based on its overview.")
+#     type: str = Field(..., description="Whether it's a 'movie' or 'tv show'.")
 
 class ChatResponse(BaseModel):
-    # This will be the main response model for our chat endpoint
-    ai_message: str = Field(..., description="The raw AI response message (e.g., for general chat parts).")
-    recommendations: Optional[List[RecommendationItem]] = Field(None, description="A list of structured recommendations if applicable.")
-    # Store history for the frontend to send back
+    # ai_message will now contain the full recommendation text
+    ai_message: str = Field(..., description="The AI's natural language response, including recommendations.")
+    # Removed recommendations list as AI will return plain text
+    # recommendations: Optional[List[RecommendationItem]] = Field(None, description="A list of structured recommendations if applicable.")
     history: List[Message] = Field(..., description="The updated conversation history including the latest turn.")
-
-# --- Removed Pydantic Model for Why Watch Request ---
-# class WhyWatchRequest(BaseModel):
-#     title: str
-#     overview: str
-#     media_type: str
 
 # --- TMDb Helper Functions (unchanged, as they are accurate for data retrieval) ---
 
@@ -239,7 +231,7 @@ def discover_tv_shows(genre_ids: list[int], year: int | None = None, language: s
 
 # --- Sarvam AI Interaction ---
 
-def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dict], media_type: str, conversation_history: List[Message]) -> Dict[str, Union[str, List[RecommendationItem], None]]:
+def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dict], media_type: str, conversation_history: List[Message]) -> str:
     print(f"Sending request to Sarvam AI chat model with TMDb {media_type} data and history...")
 
     media_for_ai_prompt = media_list_from_tmdb[:20] # Limit the list for the LLM context
@@ -251,29 +243,28 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
         for i, item in enumerate(media_for_ai_prompt):
             title_or_name = item.get('title', item.get('name', 'N/A'))
             overview = item.get('overview', 'No overview available')
-            # --- MODIFIED: Truncate overview to prevent excessively long prompts ---
+            # Truncate overview to prevent excessively long prompts
             truncated_overview = (overview[:150] + '...') if len(overview) > 150 else overview
             popularity = item.get('popularity', 'N/A')
             vote_average = item.get('vote_average', 'N/A')
             media_list_str += (
                 f"Title/Name: {title_or_name}\n"
-                f"Overview: {truncated_overview}\n" # Use truncated overview
+                f"Overview: {truncated_overview}\n"
                 f"Popularity: {popularity}\n"
                 f"Rating (Vote Average): {vote_average}\n"
                 f"---\n"
             )
 
-    # --- MODIFIED: Slightly more concise system message ---
+    # --- MODIFIED: System message now instructs for natural language/Markdown output ---
     system_message_content = (
         f"You are a helpful and friendly {media_type} recommendation assistant. "
         f"You will be given a user's {media_type} preference and a list of {media_type}s. "
-        f"Recommend 3-5 {media_type}s *from the provided list* that best match the user's preference. "
+        f"Recommend 3-5 {media_type}s *from the provided list* that best match the user's preference, "
+        f"considering their popularity and rating. "
         f"For each recommendation, provide its title/name and a brief, engaging description. "
-        f"If no good matches, politely state that. Do not invent {media_type}s. "
-        f"Respond in a JSON object with two keys: 'ai_message' (string) and 'recommendations' (array of objects). "
-        f"Each recommendation object MUST have 'title', 'description', and 'type' (which is '{media_type}'). "
-        f"Example: "
-        f'{{"ai_message": "Here are some {media_type}s for you:", "recommendations": [{{"title": "Title 1", "description": "Desc 1", "type": "{media_type}"}}]}}'
+        f"Format your recommendations clearly using Markdown (e.g., bold titles, bullet points). "
+        f"If no good matches, politely state that and suggest trying a different preference or genre. "
+        f"Do not invent {media_type}s or details not present in the provided list."
     )
 
     # Construct messages with history
@@ -282,7 +273,6 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     ]
     # Add previous messages to maintain context
     for msg in conversation_history:
-        # Ensure only 'role' and 'content' are sent to the LLM, as LLM APIs don't expect 'recommendations' in input messages
         messages_for_llm.append({"role": msg.role, "content": msg.content})
 
     # Add the current user query to the messages
@@ -294,20 +284,21 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
             f"Please recommend 3-5 {media_type}s from this list that best fit my preference. "
             f"Only recommend {media_type}s from the list provided. "
             f"For each recommendation, state the title/name and a brief description. "
-            f"Respond strictly in the JSON format specified in the system prompt."
+            f"Format your response using Markdown."
         )
     })
 
     payload = {
         "model": "sarvam-m",
         "messages": messages_for_llm,
-        "max_tokens": 700, # Increased max_tokens for potentially longer structured output + message
-        "temperature": 0.5 # Slightly lower temperature for more focused recommendations
+        "max_tokens": 500,
+        "temperature": 0.5
     }
 
-    print("\n--- Debug Info: Request Payload ---")
+    print("\n--- Debug Info: Request Payload (to Sarvam AI) ---")
     print(json.dumps(payload, indent=2))
-    print("-----------------------------------\n")
+    print(f"Total characters in payload (approx): {len(json.dumps(payload))}")
+    print("---------------------------------------------------\n")
 
     try:
         response = requests.post(SARVAM_CHAT_URL, json=payload, headers=HEADERS, timeout=30)
@@ -317,37 +308,9 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
 
         if response_data and response_data.get('choices'):
             ai_response_content = response_data['choices'][0]['message']['content']
-            print("Successfully received raw recommendation from Sarvam AI.")
+            print("Successfully received natural language recommendation from Sarvam AI.")
             print(f"Raw AI Content: {ai_response_content}")
-
-            try:
-                # Attempt to parse the AI's response as JSON
-                parsed_ai_response = json.loads(ai_response_content)
-                
-                # Validate with Pydantic model
-                # Ensure the 'recommendations' key exists and is a list of RecommendationItem
-                recommendations_data = parsed_ai_response.get('recommendations')
-                if recommendations_data is not None:
-                    parsed_recommendations = [RecommendationItem(**item) for item in recommendations_data]
-                else:
-                    parsed_recommendations = [] # No recommendations provided by AI
-
-                return {
-                    "ai_message": parsed_ai_response.get('ai_message', "I couldn't generate specific recommendations."),
-                    "recommendations": parsed_recommendations
-                }
-            except json.JSONDecodeError:
-                print("WARNING: AI response was not valid JSON. Returning as plain message.")
-                return {
-                    "ai_message": ai_response_content,
-                    "recommendations": [] # No structured recommendations
-                }
-            except Exception as e:
-                print(f"WARNING: Error parsing AI JSON response or validating with Pydantic: {e}. Raw content: {ai_response_content}")
-                return {
-                    "ai_message": f"I had trouble understanding the recommendations, but here's what I got: {ai_response_content}",
-                    "recommendations": []
-                }
+            return ai_response_content # Return the raw string content
         else:
             raise ValueError(f"Unexpected response structure from Sarvam AI: {response_data}")
 
@@ -378,7 +341,6 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
 class ChatRequest(BaseModel):
     user_message: str
     media_type: str # 'movie' or 'tv'
-    # History from previous turns
     history: List[Message] = []
 
 @app.post("/api/chat", response_model=ChatResponse) # Use ChatResponse model for structured output
@@ -391,14 +353,8 @@ async def chat_recommendation(request: ChatRequest):
         if media_type not in ['movie', 'tv']:
             raise HTTPException(status_code=400, detail="Invalid media_type. Must be 'movie' or 'tv'.")
 
-        # --- Update conversation history for the LLM input ---
-        # Append the current user message to the history
         current_history_for_llm = conversation_history + [Message(role="user", content=user_message)]
 
-        # --- Dynamic data fetching based on current message or history ---
-        # For simplicity, we'll re-extract genres/year/language from the CURRENT message.
-        # For a more advanced chatbot, you'd want to extract entities from the full history
-        # and carry forward context (e.g., if a user said "comedy" then "in 2020").
         release_year = extract_year(user_message)
         original_language = extract_language(user_message)
         genres = parse_genres(user_message, media_type)
@@ -410,36 +366,34 @@ async def chat_recommendation(request: ChatRequest):
 
         if not media_list_from_tmdb:
             ai_msg_content = f"I couldn't find any {media_type}s for your request based on the current criteria. Please try a different description or broaden your search."
-            # Append AI's response to history
             updated_history = current_history_for_llm + [Message(role="assistant", content=ai_msg_content)]
             return ChatResponse(ai_message=ai_msg_content, recommendations=[], history=updated_history)
 
-        # Get recommendation from Sarvam AI, passing the *full* conversation history
-        llm_output = get_chat_recommendation(user_message, media_list_from_tmdb, media_type, current_history_for_llm)
+        # Get recommendation from Sarvam AI, now expecting a plain text/Markdown string
+        ai_response_text = get_chat_recommendation(user_message, media_list_from_tmdb, media_type, current_history_for_llm)
 
-        ai_message = llm_output.get("ai_message", "I couldn't generate a specific message.")
-        recommendations = llm_output.get("recommendations", [])
+        # The ai_message will now be the full text response from Sarvam AI
+        ai_message = ai_response_text
+        
+        # Since Sarvam AI is returning plain text, there are no structured recommendations from it.
+        # The frontend will render the ai_message directly.
+        recommendations = [] 
 
-        # Append AI's response (both raw message and structured data if available) to history
-        # Store recommendations in the history object so frontend can access them later for "why watch"
         ai_response_for_history = Message(
             role="assistant", 
             content=ai_message, 
-            # Removed recommendations from history message as Gemini feature is removed
-            # recommendations=[rec.model_dump() for rec in recommendations] 
         )
         updated_history = current_history_for_llm + [ai_response_for_history]
 
         return ChatResponse(
             ai_message=ai_message,
-            recommendations=recommendations,
+            recommendations=recommendations, # This will always be an empty list now
             history=updated_history
         )
 
     except HTTPException as e:
         raise e
     except Exception as e:
-        # Log the error for debugging
         print(f"An unexpected error occurred in /api/chat: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
