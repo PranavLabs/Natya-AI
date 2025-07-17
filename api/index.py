@@ -76,17 +76,16 @@ class Message(BaseModel):
     role: str
     content: str
 
-# Removed RecommendationItem as AI will return plain text
-# class RecommendationItem(BaseModel):
-#     title: str = Field(..., description="The title or name of the recommended movie/TV show.")
-#     description: str = Field(..., description="A brief, engaging description based on its overview.")
-#     type: str = Field(..., description="Whether it's a 'movie' or 'tv show'.")
+# Reintroduced RecommendationItem
+class RecommendationItem(BaseModel):
+    title: str = Field(..., description="The title or name of the recommended movie/TV show.")
+    description: str = Field(..., description="A brief, engaging description based on its overview.")
+    type: str = Field(..., description="Whether it's a 'movie' or 'tv show'.")
 
 class ChatResponse(BaseModel):
-    # ai_message will now contain the full recommendation text
     ai_message: str = Field(..., description="The AI's natural language response, including recommendations.")
-    # Removed recommendations list as AI will return plain text
-    # recommendations: Optional[List[RecommendationItem]] = Field(None, description="A list of structured recommendations if applicable.")
+    # Reintroduced recommendations list
+    recommendations: Optional[List[RecommendationItem]] = Field(None, description="A list of structured recommendations if applicable.")
     history: List[Message] = Field(..., description="The updated conversation history including the latest turn.")
 
 # --- TMDb Helper Functions (unchanged, as they are accurate for data retrieval) ---
@@ -229,10 +228,44 @@ def discover_tv_shows(genre_ids: list[int], year: int | None = None, language: s
     return tv_shows[:100]
 
 
+# --- NEW: Function to parse recommendations from AI's natural language response ---
+def parse_recommendations_from_text(ai_response_text: str, media_type: str) -> List[RecommendationItem]:
+    """
+    Parses a natural language AI response to extract structured recommendation items.
+    Assumes the AI will use a consistent format like numbered lists with bold titles.
+    """
+    recommendations = []
+    # Regex to find patterns like "1. **Title**: Description" or "- **Title**: Description"
+    # It tries to capture the title (bolded) and the description.
+    # It also handles cases where description might be on a new line or not directly after title.
+    # Updated regex to be more flexible with descriptions that might span multiple lines
+    # or follow a colon/dash.
+    pattern = re.compile(r'(?:^\d+\.\s*|\*\s*|[-*]\s*)\*\*([^\*]+?)\*\*(?:\s*[:\-—]?\s*(.*?)(?=(?:^\d+\.\s*|\*\s*|[-*]\s*)\*\*|\Z))', re.MULTILINE | re.DOTALL)
+    
+    matches = pattern.finditer(ai_response_text)
+    
+    for match in matches:
+        title = match.group(1).strip()
+        description = match.group(2).strip() if match.group(2) else "No description provided."
+        
+        # Clean up any remaining markdown bolding in description if AI was inconsistent
+        description = description.replace('**', '')
+        
+        if title: # Only add if a title was successfully extracted
+            recommendations.append(RecommendationItem(
+                title=title,
+                description=description,
+                type=media_type
+            ))
+    
+    return recommendations
+
+
 # --- Sarvam AI Interaction ---
 
-def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dict], media_type: str, conversation_history: List[Message]) -> str:
-    print(f"Sending request to Sarvam AI chat model with TMDb {media_type} data and history...")
+# MODIFIED: Removed conversation_history from signature
+def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dict], media_type: str) -> str:
+    print(f"Sending request to Sarvam AI chat model with TMDb {media_type} data...")
 
     media_for_ai_prompt = media_list_from_tmdb[:20] # Limit the list for the LLM context
 
@@ -255,44 +288,42 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
                 f"---\n"
             )
 
-    # --- MODIFIED: System message now instructs for natural language/Markdown output ---
+    # System message now instructs for natural language/Markdown output
     system_message_content = (
         f"You are a helpful and friendly {media_type} recommendation assistant. "
         f"You will be given a user's {media_type} preference and a list of {media_type}s. "
         f"Recommend 3-5 {media_type}s *from the provided list* that best match the user's preference, "
         f"considering their popularity and rating. "
         f"For each recommendation, provide its title/name and a brief, engaging description. "
-        f"Format your recommendations clearly using Markdown (e.g., bold titles, bullet points). "
+        f"**Format your recommendations as a numbered list, with each title bolded.** "
+        f"For example:\n"
+        f"1. **Movie Title One**: A captivating story about...\n"
+        f"2. **Movie Title Two**: An adventurous journey through...\n"
         f"If no good matches, politely state that and suggest trying a different preference or genre. "
         f"Do not invent {media_type}s or details not present in the provided list."
     )
 
-    # Construct messages with history
+    # Construct messages for LLM (only system and current user message)
     messages_for_llm = [
-        {"role": "system", "content": system_message_content}
+        {"role": "system", "content": system_message_content},
+        {
+            "role": "user",
+            "content": (
+                f"My current {media_type} preference is: {user_preference}\n\n"
+                f"Here is a list of {media_type}s to choose from (sorted by popularity):\n\n{media_list_str}\n"
+                f"Please recommend 3-5 {media_type}s from this list that best fit my preference. "
+                f"Only recommend {media_type}s from the list provided. "
+                f"For each recommendation, state the title/name and a brief description. "
+                f"Format your response as a numbered list with bold titles as instructed."
+            )
+        }
     ]
-    # Add previous messages to maintain context
-    for msg in conversation_history:
-        messages_for_llm.append({"role": msg.role, "content": msg.content})
-
-    # Add the current user query to the messages
-    messages_for_llm.append({
-        "role": "user",
-        "content": (
-            f"My current {media_type} preference is: {user_preference}\n\n"
-            f"Here is a list of {media_type}s to choose from (sorted by popularity):\n\n{media_list_str}\n"
-            f"Please recommend 3-5 {media_type}s from this list that best fit my preference. "
-            f"Only recommend {media_type}s from the list provided. "
-            f"For each recommendation, state the title/name and a brief description. "
-            f"Format your response using Markdown."
-        )
-    })
 
     payload = {
         "model": "sarvam-m",
         "messages": messages_for_llm,
         "max_tokens": 500,
-        "temperature": 0.5
+        "temperature": 0.7 
     }
 
     print("\n--- Debug Info: Request Payload (to Sarvam AI) ---")
@@ -353,7 +384,7 @@ async def chat_recommendation(request: ChatRequest):
         if media_type not in ['movie', 'tv']:
             raise HTTPException(status_code=400, detail="Invalid media_type. Must be 'movie' or 'tv'.")
 
-        current_history_for_llm = conversation_history + [Message(role="user", content=user_message)]
+        current_user_message_obj = Message(role="user", content=user_message)
 
         release_year = extract_year(user_message)
         original_language = extract_language(user_message)
@@ -366,28 +397,28 @@ async def chat_recommendation(request: ChatRequest):
 
         if not media_list_from_tmdb:
             ai_msg_content = f"I couldn't find any {media_type}s for your request based on the current criteria. Please try a different description or broaden your search."
-            updated_history = current_history_for_llm + [Message(role="assistant", content=ai_msg_content)]
+            updated_history = conversation_history + [current_user_message_obj, Message(role="assistant", content=ai_msg_content)]
+            # Ensure recommendations is an empty list when returning
             return ChatResponse(ai_message=ai_msg_content, recommendations=[], history=updated_history)
 
         # Get recommendation from Sarvam AI, now expecting a plain text/Markdown string
-        ai_response_text = get_chat_recommendation(user_message, media_list_from_tmdb, media_type, current_history_for_llm)
+        ai_response_text = get_chat_recommendation(user_message, media_list_from_tmdb, media_type)
 
-        # The ai_message will now be the full text response from Sarvam AI
-        ai_message = ai_response_text
+        # NEW: Parse structured recommendations from the AI's text response
+        parsed_recommendations = parse_recommendations_from_text(ai_response_text, media_type)
         
-        # Since Sarvam AI is returning plain text, there are no structured recommendations from it.
-        # The frontend will render the ai_message directly.
-        recommendations = [] 
+        # The ai_message will be the full text response from Sarvam AI
+        ai_message = ai_response_text 
 
         ai_response_for_history = Message(
             role="assistant", 
             content=ai_message, 
         )
-        updated_history = current_history_for_llm + [ai_response_for_history]
+        updated_history = conversation_history + [current_user_message_obj, ai_response_for_history]
 
         return ChatResponse(
             ai_message=ai_message,
-            recommendations=recommendations, # This will always be an empty list now
+            recommendations=parsed_recommendations, # Now populated from parsing
             history=updated_history
         )
 
@@ -404,5 +435,4 @@ async def serve_frontend(full_path: str):
     if not os.path.exists(index_html_path):
         raise HTTPException(status_code=500, detail="Frontend index.html not found. Build might have failed or path is incorrect.")
     return FileResponse(index_html_path)
-
 
