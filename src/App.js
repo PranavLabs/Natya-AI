@@ -69,11 +69,13 @@ export default function App() {
 
     // If mediaType is set, proceed with recommendation request
     try {
-      const apiUrl = `${API_BASE_URL}/chat`; // <<< CHANGED TO /api/chat
+      const apiUrl = `${API_BASE_URL}/chat`; // <<< Changed to /api/chat
 
       // Prepare the history to send to the backend
       // It should include all previous messages + the current user message
-      const historyToSend = [...messages, newUserMessage];
+      // Only send 'role' and 'content' for history to backend
+      const historyToSend = messages.map(msg => ({ role: msg.role, content: msg.content }));
+      historyToSend.push({ role: newUserMessage.role, content: newUserMessage.content });
 
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -83,7 +85,7 @@ export default function App() {
         body: JSON.stringify({
           user_message: userMessageText,
           media_type: currentMediaType, // Use the determined media type
-          history: historyToSend.map(msg => ({ role: msg.role, content: msg.content })) // Ensure correct format for history
+          history: historyToSend 
         }),
       });
 
@@ -197,7 +199,10 @@ export default function App() {
                   style={msg.role === 'user' ? userMessageBubbleStyle : botMessageBubbleStyle}
                 >
                   {/* Render general AI message content */}
-                  <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }}></div>
+                  {/* Now we only render the general message if there are no structured recommendations */}
+                  {(!msg.recommendations || msg.recommendations.length === 0) && (
+                    <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }}></div>
+                  )}
                   
                   {/* Render structured recommendations if available */}
                   {msg.recommendations && msg.recommendations.length > 0 && renderRecommendations(msg.recommendations)}
@@ -447,3 +452,4 @@ const recommendationDescriptionStyle = {
   color: '#A0AEC0', // Lighter gray for description
   lineHeight: '1.4',
 };
+
