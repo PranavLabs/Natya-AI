@@ -235,29 +235,70 @@ def parse_recommendations_from_text(ai_response_text: str, media_type: str) -> L
     Assumes the AI will use a consistent format like numbered lists with bold titles.
     """
     recommendations = []
-    # Regex to find patterns like "1. **Title**: Description" or "- **Title**: Description"
-    # It tries to capture the title (bolded) and the description.
-    # It also handles cases where description might be on a new line or not directly after title.
-    # Updated regex to be more flexible with descriptions that might span multiple lines
-    # or follow a colon/dash.
-    pattern = re.compile(r'(?:^\d+\.\s*|\*\s*|[-*]\s*)\*\*([^\*]+?)\*\*(?:\s*[:\-—]?\s*(.*?)(?=(?:^\d+\.\s*|\*\s*|[-*]\s*)\*\*|\Z))', re.MULTILINE | re.DOTALL)
     
-    matches = pattern.finditer(ai_response_text)
+    # Updated regex to find multiple recommendations within a single block of text
+    # This pattern looks for:
+    # 1. Optional leading number and dot (e.g., "1. ") or bullet (e.g., "* ")
+    # 2. A bolded title (text inside **...**, non-greedy)
+    # 3. Optional separator (colon, dash, em-dash)
+    # 4. The description (non-greedy, until the start of the next recommendation pattern or end of string)
+    # (?=(?:\d+\.\s*|[-*]\s*)?\*\*|\Z) is a positive lookahead to stop at the start of the next item or end of string
+    # Added \s* to allow for more flexible spacing after the title and before the separator/description
+    # Changed [^\*]+? to .+? for title to be more permissive if bolding is missing or inconsistent
+    # Made bolding optional for title capture, but still prioritize it.
+    # Pattern: (?:^|\n)\s*(?:\d+\.\s*|[-*]\s*)?(?:\*\*([^\*]+?)\*\*|(.+?))\s*[:\-\—]?\s*(.*?)(?=(?:^|\n)\s*(?:\d+\.\s*|[-*]\s*)?(?:\*\*|\Z))
+    # Let's simplify the regex to be more robust for the common case, assuming each reco starts with a number.
+    
+    # This regex attempts to capture multiple recommendations.
+    # It looks for a number, a dot, optional space, then captures everything until
+    # the next number-dot pattern or the end of the string.
+    # Then, within that captured block, it tries to find the bolded title and description.
+    
+    # Pattern to split the entire text into potential recommendation blocks
+    # This will split by patterns like "1. ", "2. ", etc.
+    # We'll then process each block.
+    
+    # Split by lines first, then process each line or group of lines
+    # This is often more reliable than one giant regex for the whole text.
+    
+    # Let's try a regex that captures the whole item including number, title, and description
+    # This regex is designed to be more robust to variations in spacing and newlines within a single item.
+    # It looks for a number, then optional bullet/bolding, then title, then description.
+    # It uses DOTALL to allow descriptions to span multiple lines.
+    # It's non-greedy (.*?) for description to stop before the next item.
+    # The lookahead (?=...) ensures it stops before the next numbered item or end of string.
+    item_pattern = re.compile(
+        r'^\s*(?:\d+\.\s*|[-*]\s*)?' # Start of line, optional number/bullet
+        r'(?:\*\*([^\*]+?)\*\*|(.+?))' # Group 1: bolded title, Group 2: non-bolded title (if no bolding)
+        r'\s*[:\-\—]?\s*' # Optional separator and space
+        r'(.*?)(?=\n\s*(?:\d+\.\s*|[-*]\s*)?|\Z)' # Group 3: description (non-greedy) until next item or end
+        , re.MULTILINE | re.DOTALL
+    )
+    
+    matches = item_pattern.finditer(ai_response_text)
     
     for match in matches:
-        title = match.group(1).strip()
-        description = match.group(2).strip() if match.group(2) else "No description provided."
+        # Prioritize bolded title (group 1), fallback to non-bolded (group 2)
+        title = match.group(1) if match.group(1) else match.group(2)
+        description = match.group(3)
         
-        # Clean up any remaining markdown bolding in description if AI was inconsistent
-        description = description.replace('**', '')
-        
-        if title: # Only add if a title was successfully extracted
+        if title:
+            title = title.strip()
+            description = description.strip() if description else "No description provided."
+            
+            # Clean up any remaining markdown bolding in description
+            description = description.replace('**', '')
+            
             recommendations.append(RecommendationItem(
                 title=title,
                 description=description,
                 type=media_type
             ))
-    
+            print(f"Parsed item: Title='{title}', Description='{description[:50]}...'")
+        else:
+            print(f"Skipping line as no title found: {match.group(0)[:100]}...")
+
+    print(f"Parsed {len(recommendations)} structured recommendations from AI text.")
     return recommendations
 
 
@@ -292,11 +333,14 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     system_message_content = (
         f"You are a helpful and friendly {media_type} recommendation assistant. "
         f"You will be given a user's {media_type} preference and a list of {media_type}s. "
-        f"Recommend 3-5 {media_type}s *from the provided list* that best match the user's preference, "
+        f"Your response should start with a brief introductory message, such as 'Here are some recommendations for you:' or 'Based on your preferences, I suggest:'. "
+        f"Then, on a new line, provide 3-5 {media_type} recommendations *from the provided list* that best match the user's preference, "
         f"considering their popularity and rating. "
-        f"For each recommendation, provide its title/name and a brief, engaging description. "
-        f"**Format your recommendations as a numbered list, with each title bolded.** "
-        f"For example:\n"
+        f"**Format each recommendation as a numbered list item (e.g., '1. '), with the title bolded, followed by a colon and the description.** "
+        f"Ensure each recommendation is on a new line, and there is an empty line between the introductory message and the list."
+        f"Example format:\n"
+        f"Here are some great {media_type}s for you:\n"
+        f"\n" # Explicit empty line
         f"1. **Movie Title One**: A captivating story about...\n"
         f"2. **Movie Title Two**: An adventurous journey through...\n"
         f"If no good matches, politely state that and suggest trying a different preference or genre. "
@@ -435,4 +479,5 @@ async def serve_frontend(full_path: str):
     if not os.path.exists(index_html_path):
         raise HTTPException(status_code=500, detail="Frontend index.html not found. Build might have failed or path is incorrect.")
     return FileResponse(index_html_path)
+
 
