@@ -75,6 +75,7 @@ app.mount("/static", StaticFiles(directory=FRONTEND_STATIC_ASSETS_DIR), name="st
 class Message(BaseModel):
     role: str
     content: str
+    # Removed recommendations from Message model as it was for Gemini feature
 
 class RecommendationItem(BaseModel):
     title: str = Field(..., description="The title or name of the recommended movie/TV show.")
@@ -90,9 +91,13 @@ class ChatResponse(BaseModel):
     # Store history for the frontend to send back
     history: List[Message] = Field(..., description="The updated conversation history including the latest turn.")
 
+# --- Removed Pydantic Model for Why Watch Request ---
+# class WhyWatchRequest(BaseModel):
+#     title: str
+#     overview: str
+#     media_type: str
+
 # --- TMDb Helper Functions (unchanged, as they are accurate for data retrieval) ---
-# ... (copy your get_movie_genre_ids, get_tv_genre_ids, MOVIE_GENRE_MAP, TV_GENRE_MAP,
-#          parse_genres, extract_year, extract_language, discover_movies, discover_tv_shows here) ...
 
 def get_movie_genre_ids():
     try:
@@ -246,32 +251,29 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
         for i, item in enumerate(media_for_ai_prompt):
             title_or_name = item.get('title', item.get('name', 'N/A'))
             overview = item.get('overview', 'No overview available')
+            # --- MODIFIED: Truncate overview to prevent excessively long prompts ---
+            truncated_overview = (overview[:150] + '...') if len(overview) > 150 else overview
             popularity = item.get('popularity', 'N/A')
             vote_average = item.get('vote_average', 'N/A')
             media_list_str += (
                 f"Title/Name: {title_or_name}\n"
-                f"Overview: {overview}\n"
+                f"Overview: {truncated_overview}\n" # Use truncated overview
                 f"Popularity: {popularity}\n"
                 f"Rating (Vote Average): {vote_average}\n"
                 f"---\n"
             )
 
-    # System message for the LLM to guide its response format and content
+    # --- MODIFIED: Slightly more concise system message ---
     system_message_content = (
         f"You are a helpful and friendly {media_type} recommendation assistant. "
-        f"You will be given a user's {media_type} preference and a list of {media_type}s with their overviews, popularity, and ratings. "
-        f"The provided list is already sorted by popularity, with the most popular items at the top. "
-        f"Your task is to recommend 3-5 {media_type}s *from the provided list* that best match the user's preference, "
-        f"considering their popularity and rating as additional factors. "
-        f"For each recommendation, provide the {media_type} title/name and a brief, engaging description based on its overview. "
-        f"If no {media_type}s from the provided list are a good match, politely state that and suggest trying a different preference or genre. "
-        f"Do not invent {media_type}s or details not present in the provided list. "
-        f"Respond in a JSON object with two top-level keys: 'ai_message' (a string for general chat/summary) and 'recommendations' (a JSON array of objects). "
-        f"Each object in the 'recommendations' array MUST have 'title', 'description', and 'type' keys. "
-        f"The 'type' should be '{media_type}'. "
-        f"If no specific recommendations are found, set 'recommendations' to an empty array or null, but still provide a helpful 'ai_message'."
-        f"Example JSON format: "
-        f'{{"ai_message": "Based on your interest, here are some great {media_type}s:", "recommendations": [{{"title": "Movie Title 1", "description": "A thrilling story...", "type": "{media_type}"}}]}}'
+        f"You will be given a user's {media_type} preference and a list of {media_type}s. "
+        f"Recommend 3-5 {media_type}s *from the provided list* that best match the user's preference. "
+        f"For each recommendation, provide its title/name and a brief, engaging description. "
+        f"If no good matches, politely state that. Do not invent {media_type}s. "
+        f"Respond in a JSON object with two keys: 'ai_message' (string) and 'recommendations' (array of objects). "
+        f"Each recommendation object MUST have 'title', 'description', and 'type' (which is '{media_type}'). "
+        f"Example: "
+        f'{{"ai_message": "Here are some {media_type}s for you:", "recommendations": [{{"title": "Title 1", "description": "Desc 1", "type": "{media_type}"}}]}}'
     )
 
     # Construct messages with history
@@ -280,6 +282,7 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     ]
     # Add previous messages to maintain context
     for msg in conversation_history:
+        # Ensure only 'role' and 'content' are sent to the LLM, as LLM APIs don't expect 'recommendations' in input messages
         messages_for_llm.append({"role": msg.role, "content": msg.content})
 
     # Add the current user query to the messages
@@ -371,7 +374,6 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     except ValueError as e:
         raise RuntimeError(f"Data error from Sarvam AI: {e}") from e
 
-
 # --- FastAPI Endpoint for Chat ---
 class ChatRequest(BaseModel):
     user_message: str
@@ -419,14 +421,14 @@ async def chat_recommendation(request: ChatRequest):
         recommendations = llm_output.get("recommendations", [])
 
         # Append AI's response (both raw message and structured data if available) to history
-        # For history, we mostly care about the natural language exchange.
-        # You might refine this to store the structured recommendations if needed for future turns.
-        ai_response_for_history = ai_message
-        if recommendations:
-            rec_titles = ", ".join([rec.title for rec in recommendations])
-            ai_response_for_history += f"\n\nRecommended: {rec_titles}"
-
-        updated_history = current_history_for_llm + [Message(role="assistant", content=ai_response_for_history)]
+        # Store recommendations in the history object so frontend can access them later for "why watch"
+        ai_response_for_history = Message(
+            role="assistant", 
+            content=ai_message, 
+            # Removed recommendations from history message as Gemini feature is removed
+            # recommendations=[rec.model_dump() for rec in recommendations] 
+        )
+        updated_history = current_history_for_llm + [ai_response_for_history]
 
         return ChatResponse(
             ai_message=ai_message,
@@ -448,3 +450,5 @@ async def serve_frontend(full_path: str):
     if not os.path.exists(index_html_path):
         raise HTTPException(status_code=500, detail="Frontend index.html not found. Build might have failed or path is incorrect.")
     return FileResponse(index_html_path)
+
+
