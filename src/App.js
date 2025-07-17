@@ -1,15 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// IMPORTANT: For Vercel monorepo setup, API_BASE_URL points to the relative path of your serverless function.
-const API_BASE_URL = "/api"; // <<< CHANGED FOR VERCEL MONOREPO
-
 export default function App() {
+  // messages state will now mirror the backend's history structure:
+  // { role: 'user' | 'assistant', content: string, recommendations?: Array<{ title: string, description: string, type: string }> }
   const [messages, setMessages] = useState([]);
   const [inputValue, setInputValue] = useState('');
   const [mediaType, setMediaType] = useState(null); // 'movie' or 'tv'
   const [isLoading, setIsLoading] = useState(false);
   const [currentView, setCurrentView] = useState('chat'); // 'chat' or 'about'
   const messagesEndRef = useRef(null);
+
+  // IMPORTANT: For Vercel monorepo setup, API_BASE_URL points to the relative path of your serverless function.
+  // This should be '/api' if your FastAPI app is served under /api/
+  const API_BASE_URL = "/api"; 
 
   // Scroll to the latest message
   const scrollToBottom = () => {
@@ -22,50 +25,65 @@ export default function App() {
 
   // Initial greeting message
   useEffect(() => {
-    if (currentView === 'chat' && messages.length === 0) { // Only show greeting on initial chat view load
+    if (currentView === 'chat' && messages.length === 0) {
       setMessages([
-        { sender: 'bot', text: "Hello! I'm your Movie/TV Show Recommendation Assistant. What are you in the mood for today?" },
-        { sender: 'bot', text: "Do you want to search for a **movie** or a **tv** show?" }
+        { role: 'assistant', content: "Hello! I'm your Movie/TV Show Recommendation Assistant. What are you in the mood for today?" },
+        { role: 'assistant', content: "Do you want to search for a **movie** or a **tv show**?" }
       ]);
     }
-  }, [currentView, messages.length]); // Depend on currentView and messages.length
+  }, [currentView, messages.length]);
 
   const handleSendMessage = async () => {
     if (inputValue.trim() === '') return;
 
-    const userMessage = inputValue.trim();
-    setMessages((prevMessages) => [...prevMessages, { sender: 'user', text: userMessage }]);
+    const userMessageText = inputValue.trim();
+    const newUserMessage = { role: 'user', content: userMessageText };
+
+    // Optimistically add user message to display
+    setMessages((prevMessages) => [...prevMessages, newUserMessage]);
     setInputValue('');
     setIsLoading(true);
 
-    if (!mediaType) {
-      // First, determine media type
-      if (userMessage.toLowerCase().includes('movie')) {
+    let currentMediaType = mediaType;
+
+    // First, determine media type if not already set
+    if (!currentMediaType) {
+      if (userMessageText.toLowerCase().includes('movie')) {
+        currentMediaType = 'movie';
         setMediaType('movie');
-        setMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: "Great! Tell me about the **movie** you're looking for (genre, mood, style, year, language/industry, etc.)." }]);
+        setMessages((prevMessages) => [...prevMessages, { role: 'assistant', content: "Great! Tell me about the **movie** you're looking for (genre, mood, style, year, language/industry, etc.)." }]);
         setIsLoading(false);
-      } else if (userMessage.toLowerCase().includes('tv') || userMessage.toLowerCase().includes('show') || userMessage.toLowerCase().includes('series')) {
+        return; // Stop here, wait for the next user input for actual recommendation
+      } else if (userMessageText.toLowerCase().includes('tv') || userMessageText.toLowerCase().includes('show') || userMessageText.toLowerCase().includes('series')) {
+        currentMediaType = 'tv';
         setMediaType('tv');
-        setMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: "Awesome! Tell me about the **TV show** you're looking for (genre, mood, style, year, language/industry, etc.)." }]);
+        setMessages((prevMessages) => [...prevMessages, { role: 'assistant', content: "Awesome! Tell me about the **TV show** you're looking for (genre, mood, style, year, language/industry, etc.)." }]);
         setIsLoading(false);
+        return; // Stop here, wait for the next user input for actual recommendation
       } else {
-        setMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: "Please specify if you're looking for a **movie** or a **tv** show." }]);
+        setMessages((prevMessages) => [...prevMessages, { role: 'assistant', content: "Please specify if you're looking for a **movie** or a **tv show**." }]);
         setIsLoading(false);
+        return;
       }
-      return;
     }
 
     // If mediaType is set, proceed with recommendation request
     try {
-      const apiUrl = `${API_BASE_URL}/recommend`; 
+      const apiUrl = `${API_BASE_URL}/chat`; // <<< CHANGED TO /api/chat
+
+      // Prepare the history to send to the backend
+      // It should include all previous messages + the current user message
+      const historyToSend = [...messages, newUserMessage];
+
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          user_preference: userMessage,
-          media_type: mediaType,
+          user_message: userMessageText,
+          media_type: currentMediaType, // Use the determined media type
+          history: historyToSend.map(msg => ({ role: msg.role, content: msg.content })) // Ensure correct format for history
         }),
       });
 
@@ -75,13 +93,36 @@ export default function App() {
       }
 
       const data = await response.json();
-      setMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: data.recommendation }]);
+      
+      // The backend now returns the full updated history, including the AI's response.
+      // The AI's latest message might also contain 'recommendations' array.
+      setMessages(data.history);
+
     } catch (error) {
       console.error('API call failed:', error);
-      setMessages((prevMessages) => [...prevMessages, { sender: 'bot', text: `Oops! Something went wrong: ${error.message}. Please try again.` }]);
+      setMessages((prevMessages) => [...prevMessages, { role: 'assistant', content: `Oops! Something went wrong: ${error.message}. Please try again.` }]);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  // Helper function to render recommendations
+  const renderRecommendations = (recs) => {
+    if (!recs || recs.length === 0) return null;
+
+    return (
+      <div style={recommendationsContainerStyle}>
+        <h3 style={recommendationsTitleStyle}>Recommendations:</h3>
+        <ul style={recommendationsListStyle}>
+          {recs.map((rec, idx) => (
+            <li key={idx} style={recommendationItemStyle}>
+              <strong style={recommendationTitleStyle}>{rec.title}</strong>
+              <p style={recommendationDescriptionStyle}>{rec.description}</p>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
   };
 
   return (
@@ -150,15 +191,38 @@ export default function App() {
             {messages.map((msg, index) => (
               <div
                 key={index}
-                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
               >
                 <div
-                  style={msg.sender === 'user' ? userMessageBubbleStyle : botMessageBubbleStyle}
-                  dangerouslySetInnerHTML={{ __html: msg.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }}
+                  style={msg.role === 'user' ? userMessageBubbleStyle : botMessageBubbleStyle}
                 >
+                  {/* Render general AI message content */}
+                  <div dangerouslySetInnerHTML={{ __html: msg.content.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>') }}></div>
+                  
+                  {/* Render structured recommendations if available */}
+                  {msg.recommendations && msg.recommendations.length > 0 && renderRecommendations(msg.recommendations)}
                 </div>
               </div>
             ))}
+            {isLoading && (
+              <div className="flex justify-start">
+                <div style={botMessageBubbleStyle}>
+                  <div className="animate-spin" style={spinnerStyle}>
+                    {/* Simple SVG spinner */}
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 4.75V6.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M17.1266 6.87347L16.0659 7.93414" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M19.25 12L17.75 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M17.1266 17.1265L16.0659 16.0659" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M12 17.75V19.25" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M7.93414 16.0659L6.87347 17.1266" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M4.75 12L6.25 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                      <path d="M7.93414 7.93414L6.87347 6.87347" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"></path>
+                    </svg>
+                  </div>
+                </div>
+              </div>
+            )}
             <div ref={messagesEndRef} /> {/* Scroll target */}
           </div>
 
@@ -342,4 +406,44 @@ const aboutParagraphStyle = {
     marginBottom: '1rem',
     maxWidth: '600px', // Constrain width for readability
     color: '#CBD5E0', // Slightly lighter gray for body text
+};
+
+// --- New styles for structured recommendations ---
+const recommendationsContainerStyle = {
+  marginTop: '1rem',
+  paddingTop: '0.75rem',
+  borderTop: '1px solid rgba(255, 255, 255, 0.1)', // Subtle separator
+};
+
+const recommendationsTitleStyle = {
+  fontSize: '1.1rem',
+  fontWeight: 'bold',
+  marginBottom: '0.5rem',
+  color: '#818CF8', // Indigo for titles
+};
+
+const recommendationsListStyle = {
+  listStyle: 'none', // Remove default bullet points
+  padding: 0,
+  margin: 0,
+};
+
+const recommendationItemStyle = {
+  marginBottom: '0.75rem',
+  padding: '0.5rem',
+  backgroundColor: '#2D3748', // Slightly lighter background for each item
+  borderRadius: '0.375rem',
+  boxShadow: '0 2px 4px rgba(0, 0, 0, 0.1)',
+};
+
+const recommendationTitleStyle = {
+  color: '#E5E7EB', // Light text for title
+  display: 'block', // Ensure title is on its own line
+  marginBottom: '0.25rem',
+};
+
+const recommendationDescriptionStyle = {
+  fontSize: '0.9rem',
+  color: '#A0AEC0', // Lighter gray for description
+  lineHeight: '1.4',
 };
