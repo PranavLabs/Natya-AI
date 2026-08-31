@@ -84,11 +84,12 @@ Adjust route names and payloads to match your codebase.
 
 ## Configuration &amp; Environment Variables
 Typical variables used by the project:
-- MOVIEDB_API_KEY — API key for The Movie Database (TMDB)
-- OPENAI_API_KEY — key for conversational LLM provider (optional)
+- TMDB_API_KEY — API key for The Movie Database (TMDb)
+- SARVAM_API_KEY — API key for Sarvam AI
+- SARVAM_MODEL — Model ID for Sarvam AI chat completions (default: `sarvam-105b`, alternative: `sarvam-105b-conversations`)
+- SARVAM_CHAT_URL — Sarvam chat completions endpoint (default: `https://api.sarvam.ai/v1/chat/completions`)
 - NATYA_PORT — backend port (default 8000)
 - FRONTEND_API_URL — backend base URL used by the frontend
-- DATABASE_URL — optional DB for storing user preferences and feedback
 
 Store secrets in a `.env` file and never commit them to git.
 

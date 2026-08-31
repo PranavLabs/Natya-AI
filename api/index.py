@@ -27,9 +27,10 @@ if not SARVAM_KEY:
 
 tmdb.API_KEY = TMDB_API_KEY
 
-SARVAM_CHAT_URL = "https://api.sarvam.ai/v1/chat/completions"
+SARVAM_CHAT_URL = os.getenv("SARVAM_CHAT_URL", "https://api.sarvam.ai/v1/chat/completions")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "sarvam-105b")
 HEADERS = {
-    "API-Subscription-Key": SARVAM_KEY,
+    "api-subscription-key": SARVAM_KEY,
     "Content-Type": "application/json"
 }
 
@@ -364,7 +365,7 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     ]
 
     payload = {
-        "model": "sarvam-m",
+        "model": SARVAM_MODEL,
         "messages": messages_for_llm,
         "max_tokens": 500,
         "temperature": 0.7 
@@ -390,19 +391,29 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
             raise ValueError(f"Unexpected response structure from Sarvam AI: {response_data}")
 
     except requests.exceptions.RequestException as e:
-        print(f"\n--- Debug Info: Raw API Response (if available) ---")
-        print(f"HTTP Status Code: {e.response.status_code if hasattr(e, 'response') and e.response is not None else 'N/A'}")
-        print(f"HTTP Reason: {e.response.reason if hasattr(e, 'response') and e.response is not None else 'N/A'}")
+        raw_error_text = ""
+        status_code = "N/A"
+        reason = "N/A"
         if hasattr(e, 'response') and e.response is not None:
-            print(e.response.text)
+            status_code = e.response.status_code
+            reason = e.response.reason
+            try:
+                raw_error_text = e.response.text
+            except Exception:
+                pass
+        print(f"\n--- Debug Info: Raw API Response (if available) ---")
+        print(f"HTTP Status Code: {status_code}")
+        print(f"HTTP Reason: {reason}")
+        if raw_error_text:
+            print(raw_error_text)
         else:
             print("No raw response text available.")
         print("---------------------------------------------------\n")
+        detail_msg = f" - Response: {raw_error_text}" if raw_error_text else ""
         raise RuntimeError(
-            f"Error calling Sarvam AI chat completion service: {e}. "
-            "This is likely a 4xx or 5xx HTTP error. "
+            f"Error calling Sarvam AI chat completion service: {e}{detail_msg}. "
             "Please check your SARVAM_API_KEY, verify the SARVAM_CHAT_URL, "
-            "and ensure the 'model' name is correct in the payload."
+            f"and ensure the model '{SARVAM_MODEL}' is supported."
         ) from e
     except KeyError as e:
         raise RuntimeError(
