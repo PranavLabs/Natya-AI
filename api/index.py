@@ -28,7 +28,7 @@ if not SARVAM_KEY:
 tmdb.API_KEY = TMDB_API_KEY
 
 SARVAM_CHAT_URL = os.getenv("SARVAM_CHAT_URL", "https://api.sarvam.ai/v1/chat/completions")
-SARVAM_MODEL = os.getenv("SARVAM_MODEL", "sarvam-105b")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "sarvam-105b-conversations")
 HEADERS = {
     "api-subscription-key": SARVAM_KEY,
     "Content-Type": "application/json"
@@ -117,7 +117,9 @@ def get_tv_genre_ids():
 MOVIE_GENRE_MAP = get_movie_genre_ids()
 TV_GENRE_MAP = get_tv_genre_ids()
 
-def parse_genres(user_text: str, media_type: str) -> list[int]:
+def parse_genres(user_text: str | None, media_type: str) -> list[int]:
+    if not user_text or not isinstance(user_text, str):
+        user_text = ""
     user_text_lower = user_text.lower()
     hits = []
     
@@ -140,7 +142,9 @@ def parse_genres(user_text: str, media_type: str) -> list[int]:
             return [genre_map_to_use.get('documentary', list(genre_map_to_use.values())[0])]
     return hits
 
-def extract_year(user_text: str) -> int | None:
+def extract_year(user_text: str | None) -> int | None:
+    if not user_text or not isinstance(user_text, str):
+        return None
     match = re.search(r'\b(19\d{2}|20\d{2})\b', user_text)
     if match:
         try:
@@ -151,7 +155,9 @@ def extract_year(user_text: str) -> int | None:
             pass
     return None
 
-def extract_language(user_text: str) -> str | None:
+def extract_language(user_text: str | None) -> str | None:
+    if not user_text or not isinstance(user_text, str):
+        return None
     user_text_lower = user_text.lower()
     
     language_map = {
@@ -230,44 +236,16 @@ def discover_tv_shows(genre_ids: list[int], year: int | None = None, language: s
 
 
 # --- NEW: Function to parse recommendations from AI's natural language response ---
-def parse_recommendations_from_text(ai_response_text: str, media_type: str) -> List[RecommendationItem]:
+def parse_recommendations_from_text(ai_response_text: str | None, media_type: str) -> List[RecommendationItem]:
     """
     Parses a natural language AI response to extract structured recommendation items.
     Assumes the AI will use a consistent format like numbered lists with bold titles.
     """
+    if not ai_response_text or not isinstance(ai_response_text, str):
+        return []
+
     recommendations = []
     
-    # Updated regex to find multiple recommendations within a single block of text
-    # This pattern looks for:
-    # 1. Optional leading number and dot (e.g., "1. ") or bullet (e.g., "* ")
-    # 2. A bolded title (text inside **...**, non-greedy)
-    # 3. Optional separator (colon, dash, em-dash)
-    # 4. The description (non-greedy, until the start of the next recommendation pattern or end of string)
-    # (?=(?:\d+\.\s*|[-*]\s*)?\*\*|\Z) is a positive lookahead to stop at the start of the next item or end of string
-    # Added \s* to allow for more flexible spacing after the title and before the separator/description
-    # Changed [^\*]+? to .+? for title to be more permissive if bolding is missing or inconsistent
-    # Made bolding optional for title capture, but still prioritize it.
-    # Pattern: (?:^|\n)\s*(?:\d+\.\s*|[-*]\s*)?(?:\*\*([^\*]+?)\*\*|(.+?))\s*[:\-\—]?\s*(.*?)(?=(?:^|\n)\s*(?:\d+\.\s*|[-*]\s*)?(?:\*\*|\Z))
-    # Let's simplify the regex to be more robust for the common case, assuming each reco starts with a number.
-    
-    # This regex attempts to capture multiple recommendations.
-    # It looks for a number, a dot, optional space, then captures everything until
-    # the next number-dot pattern or the end of the string.
-    # Then, within that captured block, it tries to find the bolded title and description.
-    
-    # Pattern to split the entire text into potential recommendation blocks
-    # This will split by patterns like "1. ", "2. ", etc.
-    # We'll then process each block.
-    
-    # Split by lines first, then process each line or group of lines
-    # This is often more reliable than one giant regex for the whole text.
-    
-    # Let's try a regex that captures the whole item including number, title, and description
-    # This regex is designed to be more robust to variations in spacing and newlines within a single item.
-    # It looks for a number, then optional bullet/bolding, then title, then description.
-    # It uses DOTALL to allow descriptions to span multiple lines.
-    # It's non-greedy (.*?) for description to stop before the next item.
-    # The lookahead (?=...) ensures it stops before the next numbered item or end of string.
     item_pattern = re.compile(
         r'^\s*(?:\d+\.\s*|[-*]\s*)?' # Start of line, optional number/bullet
         r'(?:\*\*([^\*]+?)\*\*|(.+?))' # Group 1: bolded title, Group 2: non-bolded title (if no bolding)
@@ -367,7 +345,7 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
     payload = {
         "model": SARVAM_MODEL,
         "messages": messages_for_llm,
-        "max_tokens": 500,
+        "max_tokens": 2048,
         "temperature": 0.7 
     }
 
@@ -383,10 +361,19 @@ def get_chat_recommendation(user_preference: str, media_list_from_tmdb: list[dic
         response_data = response.json()
 
         if response_data and response_data.get('choices'):
-            ai_response_content = response_data['choices'][0]['message']['content']
+            choice = response_data['choices'][0]
+            message = choice.get('message', {})
+            ai_response_content = message.get('content')
+            if not ai_response_content:
+                ai_response_content = message.get('reasoning_content')
+            if not ai_response_content and choice.get('text'):
+                ai_response_content = choice.get('text')
+            if not ai_response_content:
+                ai_response_content = "Here are some recommendations based on your request:\n"
+
             print("Successfully received natural language recommendation from Sarvam AI.")
             print(f"Raw AI Content: {ai_response_content}")
-            return ai_response_content # Return the raw string content
+            return ai_response_content # Return the string content
         else:
             raise ValueError(f"Unexpected response structure from Sarvam AI: {response_data}")
 
